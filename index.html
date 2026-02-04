@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CRWI Attendance</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Charts -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <!-- Styles -->
+    <!-- Styles -->
+    <link rel="stylesheet" href="css/main.css">
+
+    <!-- Critical Error Handler for Debugging -->
+    <script>
+        window.onerror = function (msg, url, line, col, error) {
+            const div = document.createElement('div');
+            div.style.cssText = 'position:fixed; top:0; left:0; right:0; background:red; color:white; padding:1rem; z-index:9999; font-family:monospace; white-space:pre-wrap;';
+            div.textContent = `JS Error: ${msg}\nLine: ${line}`;
+            document.body.appendChild(div);
+            return false;
+        };
+        window.addEventListener('unhandledrejection', function (event) {
+            const div = document.createElement('div');
+            div.style.cssText = 'position:fixed; top:0; left:0; right:0; background:orange; color:black; padding:1rem; z-index:9999; font-family:monospace; white-space:pre-wrap;';
+            div.textContent = `Promise Error: ${event.reason}`;
+            document.body.appendChild(div);
+        });
+    </script>
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Desktop Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo-circle">
+                    <img src="https://ui-avatars.com/api/?name=CRWI&background=random" alt="Logo">
+                </div>
+                <h2>CRWI Attendance</h2>
+            </div>
+
+            <nav class="sidebar-nav">
+                <a href="#dashboard" class="nav-item active" data-page="dashboard">
+                    <i class="fa-solid fa-house"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="#timesheet" class="nav-item" data-page="timesheet">
+                    <i class="fa-solid fa-calendar-days"></i>
+                    <span>Timesheet</span>
+                </a>
+                <a href="#profile" class="nav-item" data-page="profile">
+                    <i class="fa-solid fa-user"></i>
+                    <span>Profile</span>
+                </a>
+                <a href="#admin" class="nav-item" data-page="admin" style="display: none;">
+                    <i class="fa-solid fa-users-gear"></i>
+                    <span>Admin</span>
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="user-mini-profile">
+                    <img src="https://ui-avatars.com/api/?name=User&background=0D8ABC&color=fff" alt="User">
+                    <div>
+                        <p class="user-name">Staff Member</p>
+                        <p class="user-role">Employee</p>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Mobile Header -->
+            <header class="mobile-header">
+                <div class="logo-area">
+                    <div class="logo-circle small">
+                        <img src="https://ui-avatars.com/api/?name=CRWI&background=random" alt="Logo">
+                    </div>
+                    <h1>CRWI Attendance</h1>
+                </div>
+                <button class="icon-btn">
+                    <i class="fa-regular fa-bell"></i>
+                </button>
+            </header>
+
+            <div id="page-content" class="page-content">
+                <!-- Content injected via JS -->
+                <div class="loading-spinner">Loading...</div>
+            </div>
+        </main>
+
+        <!-- Mobile Bottom Nav -->
+        <nav class="mobile-nav">
+            <a href="#dashboard" class="mobile-nav-item active" data-page="dashboard">
+                <i class="fa-solid fa-house"></i>
+                <span>Home</span>
+            </a>
+            <a href="#timesheet" class="mobile-nav-item" data-page="timesheet">
+                <i class="fa-solid fa-calendar-check"></i>
+                <span>Timesheet</span>
+            </a>
+            <a href="#profile" class="mobile-nav-item" data-page="profile">
+                <i class="fa-solid fa-user"></i>
+                <span>Profile</span>
+            </a>
+        </nav>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/modules/db.js"></script>
+    <script src="js/modules/auth.js"></script>
+    <script src="js/modules/attendance.js"></script>
+    <script src="js/modules/reports.js"></script>
+    <script src="js/modules/leaves.js"></script>
+    <script src="js/modules/analytics.js"></script>
+    <script src="js/ui.js"></script>
+    <script src="js/app.js"></script>
+</body>
+
+</html>
