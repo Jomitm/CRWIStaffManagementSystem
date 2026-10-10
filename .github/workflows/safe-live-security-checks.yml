@@ -18,7 +18,7 @@ jobs:
   public-http-checks:
     name: Public HTTPS, headers and deployed-code checks
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 5
     steps:
       - name: Check public homepage and response headers
         shell: bash
@@ -27,17 +27,11 @@ jobs:
           TARGET="https://staff.crwi.org.in/"
           TMP_HEADERS="$(mktemp)"
           trap 'rm -f "$TMP_HEADERS"' EXIT
-
-          echo "Target: $TARGET"
-          echo "Scope: unauthenticated GET of the public homepage; response body discarded."
-          echo "No credentials, cookies, form submissions, directory enumeration, or state-changing requests are used."
-
           if ! RESULT="$(curl --silent --show-error --location --max-redirs 5 --connect-timeout 10 --max-time 20 --dump-header "$TMP_HEADERS" --output /dev/null --write-out 'HTTP_STATUS=%{http_code}\nTLS_VERIFY_RESULT=%{ssl_verify_result}\nREDIRECTS=%{num_redirects}\n' "$TARGET")"; then
             echo "::error::Could not complete HTTPS request. This may be a network/DNS/site availability issue; it does not by itself prove a vulnerability."
             exit 1
           fi
-          printf '%s\n' "$RESULT"
-
+          printf 'Target: %s\n%s\n' "$TARGET" "$RESULT"
           {
             echo "## Public response header checks"
             echo 'Target: https://staff.crwi.org.in/'
@@ -46,87 +40,102 @@ jobs:
             echo "| Header | Result |"
             echo "|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
-
           awk '
             /^HTTP\// { delete h; next }
-            /^[[:alnum:]-]+:/ {
-              name=$1; sub(/:$/, "", name); h[tolower(name)]=1
-            }
+            /^[[:alnum:]-]+:/ { name=$1; sub(/:$/, "", name); h[tolower(name)]=1 }
             END {
-              names[1]="strict-transport-security"
-              names[2]="content-security-policy"
-              names[3]="x-content-type-options"
-              names[4]="x-frame-options"
-              names[5]="referrer-policy"
-              names[6]="permissions-policy"
-              for (i=1; i<=6; i++) {
-                n=names[i]
-                if (h[n]) print n "|PRESENT"
-                else print n "|MISSING"
-              }
+              names[1]="strict-transport-security"; names[2]="content-security-policy"
+              names[3]="x-content-type-options"; names[4]="x-frame-options"
+              names[5]="referrer-policy"; names[6]="permissions-policy"
+              for (i=1; i<=6; i++) print names[i] "|" (h[names[i]] ? "PRESENT" : "MISSING")
             }
           ' "$TMP_HEADERS" | while IFS='|' read -r name status; do
             printf '%-28s %s\n' "$name" "$status"
             printf '| %s | %s |\n' "$name" "$status" >> "$GITHUB_STEP_SUMMARY"
           done
-
-          echo
-          echo "HTTP-to-HTTPS redirect check:"
           HTTP_HEADERS="$(mktemp)"
           trap 'rm -f "$TMP_HEADERS" "$HTTP_HEADERS"' EXIT
+          echo
+          echo "HTTP-to-HTTPS redirect check:"
           if HTTP_RESULT="$(curl --silent --show-error --max-redirs 0 --connect-timeout 10 --max-time 15 --dump-header "$HTTP_HEADERS" --output /dev/null --write-out 'HTTP_STATUS=%{http_code}\n' 'http://staff.crwi.org.in/' 2>&1)"; then
             printf '%s\n' "$HTTP_RESULT"
-            if grep -Eiq '^Location:[[:space:]]*https://' "$HTTP_HEADERS"; then
-              echo "HTTP redirect to HTTPS: PRESENT"
-            else
-              echo "HTTP redirect to HTTPS: NOT CONFIRMED"
-            fi
+            if grep -Eiq '^Location:[[:space:]]*https://' "$HTTP_HEADERS"; then echo "HTTP redirect to HTTPS: PRESENT"; else echo "HTTP redirect to HTTPS: NOT CONFIRMED"; fi
           else
             echo "HTTP check failed: $HTTP_RESULT"
           fi
-
-          echo
-          echo "Cookie flags (values are never printed; only flags are checked):"
           if grep -Eiq '^Set-Cookie:' "$TMP_HEADERS"; then
+            echo "Homepage sets at least one cookie; flags checked without printing values:"
             grep -i '^Set-Cookie:' "$TMP_HEADERS" | while IFS= read -r line; do
-              lower="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
-              flags=""
+              lower="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"; flags=""
               printf '%s' "$lower" | grep -q '; secure' && flags="${flags} Secure"
               printf '%s' "$lower" | grep -q '; httponly' && flags="${flags} HttpOnly"
               printf '%s' "$lower" | grep -q '; samesite=' && flags="${flags} SameSite"
-              echo "Set-Cookie flags:${flags:- none detected}"
+              echo "Cookie flags:${flags:- none detected}"
             done
           else
-            echo "No Set-Cookie header observed on the homepage response."
+            echo "No Set-Cookie header observed on homepage."
           fi
 
-      - name: Check deployed JavaScript assets without exposing their contents
+      - name: Discover and check same-origin deployed JavaScript
         shell: bash
         run: |
           set -u
           BASE="https://staff.crwi.org.in"
-          ASSETS="js/modules/db.js js/modules/auth.js js/modules/attendance.js js/modules/reports.js js/modules/leaves.js js/ui.js js/app.js"
+          HTML="$(mktemp)"
+          PATHS="$(mktemp)"
+          trap 'rm -f "$HTML" "$PATHS"' EXIT
+          if ! curl --silent --show-error --location --max-redirs 5 --connect-timeout 10 --max-time 20 --output "$HTML" "$BASE/"; then
+            echo "::error::Could not download public homepage HTML for script discovery."
+            exit 1
+          fi
+          python3 - "$HTML" "$PATHS" <<'PY'
+          import re, sys
+          from html.parser import HTMLParser
+          from urllib.parse import urljoin, urlparse
+          base = "https://staff.crwi.org.in/"
+          class P(HTMLParser):
+              def __init__(self):
+                  super().__init__(); self.paths=[]
+              def handle_starttag(self, tag, attrs):
+                  if tag.lower() != "script": return
+                  src = dict(attrs).get("src")
+                  if not src: return
+                  u = urljoin(base, src); p = urlparse(u)
+                  if p.scheme == "https" and p.netloc == "staff.crwi.org.in" and p.path.lower().endswith(".js"):
+                      item = p.path + (("?" + p.query) if p.query else "")
+                      if item not in self.paths: self.paths.append(item)
+          p=P()
+          with open(sys.argv[1], encoding="utf-8", errors="replace") as f: p.feed(f.read())
+          with open(sys.argv[2], "w") as f:
+              for item in p.paths: f.write(item + "\n")
+          print("Same-origin JavaScript assets discovered:", len(p.paths))
+          PY
           echo "## Deployed JavaScript asset checks" >> "$GITHUB_STEP_SUMMARY"
-          echo "Checks only public script availability and reports boolean code-pattern indicators; script contents and passwords are never printed." >> "$GITHUB_STEP_SUMMARY"
-          echo "| Asset | HTTP | IndexedDB | localStorage | Plain password comparison pattern |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---:|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          for path in $ASSETS; do
+          echo "Only same-origin script URLs referenced by the public homepage are checked. Script contents are never printed." >> "$GITHUB_STEP_SUMMARY"
+          echo "| Asset path | HTTP | IndexedDB | localStorage | Firebase auth reference | Direct password comparison pattern |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|---|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          count=0
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            count=$((count+1))
             tmp="$(mktemp)"
-            status="$(curl --silent --show-error --location --max-redirs 5 --connect-timeout 8 --max-time 15 --output "$tmp" --write-out '%{http_code}' "$BASE/$path" 2>/dev/null || true)"
+            status="$(curl --silent --show-error --location --max-redirs 5 --connect-timeout 8 --max-time 15 --output "$tmp" --write-out '%{http_code}' "$BASE$path" 2>/dev/null || true)"
             if [ "$status" = "200" ]; then
-              indexed="no"; localstore="no"; plainpass="no"
+              indexed="no"; localstore="no"; firebase="no"; plainpass="no"
               grep -Eiq 'indexedDB' "$tmp" && indexed="yes"
               grep -Eiq 'localStorage' "$tmp" && localstore="yes"
-              grep -Eiq 'password[[:space:]]*===[[:space:]]*password|.password[[:space:]]*===[[:space:]]*password' "$tmp" && plainpass="yes"
-              printf '%s HTTP %s | IndexedDB=%s | localStorage=%s | direct password comparison=%s\n' "$path" "$status" "$indexed" "$localstore" "$plainpass"
-              printf '| %s | %s | %s | %s | %s |\n' "$path" "$status" "$indexed" "$localstore" "$plainpass" >> "$GITHUB_STEP_SUMMARY"
+              grep -Eiq 'signInWithEmailAndPassword|firebase/auth|firebaseapp' "$tmp" && firebase="yes"
+              grep -Eiq '\.password[[:space:]]*===[[:space:]]*password|password[[:space:]]*===[[:space:]]*password' "$tmp" && plainpass="yes"
+              printf '%s HTTP %s | IndexedDB=%s | localStorage=%s | Firebase-auth-reference=%s | direct-password-comparison=%s\n' "$path" "$status" "$indexed" "$localstore" "$firebase" "$plainpass"
+              printf '| %s | %s | %s | %s | %s | %s |\n' "$path" "$status" "$indexed" "$localstore" "$firebase" "$plainpass" >> "$GITHUB_STEP_SUMMARY"
             else
-              printf '%s HTTP %s (not found or request failed)\n' "$path" "${status:-unknown}"
-              printf '| %s | %s | n/a | n/a | n/a |\n' "$path" "${status:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+              printf '%s HTTP %s (asset not available)\n' "$path" "${status:-unknown}"
+              printf '| %s | %s | n/a | n/a | n/a | n/a |\n' "$path" "${status:-unknown}" >> "$GITHUB_STEP_SUMMARY"
             fi
             rm -f "$tmp"
-          done
-
-          echo
-          echo "Interpretation: public JavaScript being downloadable is normal for browser apps. Storage/password-pattern indicators help compare the deployed build with source-code findings; they are not by themselves proof of a live authentication bypass."
-          echo "This does not test login, authorization, private data access, or any state-changing action."
+          done < "$PATHS"
+          if [ "$count" -eq 0 ]; then
+            echo "No same-origin .js script URLs were found in homepage HTML."
+            echo "| (no same-origin scripts found) | n/a | n/a | n/a | n/a | n/a |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Interpretation: static code-pattern checks are indicators only; they do not prove or disprove authentication bypasses. This workflow does not log in, access private records, submit forms, or alter data."
