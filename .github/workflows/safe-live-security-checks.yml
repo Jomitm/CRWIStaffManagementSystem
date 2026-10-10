@@ -76,26 +76,24 @@ jobs:
             echo "No Set-Cookie header observed on homepage."
           fi
 
-      - name: Discover and check same-origin deployed JavaScript
+      - name: Discover and inspect public JavaScript security patterns
         shell: bash
         run: |
           set -u
           BASE="https://staff.crwi.org.in"
-          HTML="$(mktemp)"
-          PATHS="$(mktemp)"
+          HTML="$(mktemp)"; PATHS="$(mktemp)"
           trap 'rm -f "$HTML" "$PATHS"' EXIT
           if ! curl --silent --show-error --location --max-redirs 5 --connect-timeout 10 --max-time 20 --output "$HTML" "$BASE/"; then
             echo "::error::Could not download public homepage HTML for script discovery."
             exit 1
           fi
           python3 - "$HTML" "$PATHS" <<'PY'
-          import re, sys
+          import sys
           from html.parser import HTMLParser
           from urllib.parse import urljoin, urlparse
           base = "https://staff.crwi.org.in/"
           class P(HTMLParser):
-              def __init__(self):
-                  super().__init__(); self.paths=[]
+              def __init__(self): super().__init__(); self.paths=[]
               def handle_starttag(self, tag, attrs):
                   if tag.lower() != "script": return
                   src = dict(attrs).get("src")
@@ -110,32 +108,33 @@ jobs:
               for item in p.paths: f.write(item + "\n")
           print("Same-origin JavaScript assets discovered:", len(p.paths))
           PY
-          echo "## Deployed JavaScript asset checks" >> "$GITHUB_STEP_SUMMARY"
-          echo "Only same-origin script URLs referenced by the public homepage are checked. Script contents are never printed." >> "$GITHUB_STEP_SUMMARY"
-          echo "| Asset path | HTTP | IndexedDB | localStorage | Firebase auth reference | Direct password comparison pattern |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---:|---|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Deployed JavaScript security indicators" >> "$GITHUB_STEP_SUMMARY"
+          echo "Only same-origin scripts referenced by the public homepage are fetched. Script contents and secrets are not printed." >> "$GITHUB_STEP_SUMMARY"
+          echo "| Asset | HTTP | Firebase Auth API | Auth state observer | Firestore API | Client role/admin keywords | localStorage | Direct password compare |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|---|---|---|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
           count=0
           while IFS= read -r path; do
             [ -n "$path" ] || continue
-            count=$((count+1))
-            tmp="$(mktemp)"
+            count=$((count+1)); tmp="$(mktemp)"
             status="$(curl --silent --show-error --location --max-redirs 5 --connect-timeout 8 --max-time 15 --output "$tmp" --write-out '%{http_code}' "$BASE$path" 2>/dev/null || true)"
             if [ "$status" = "200" ]; then
-              indexed="no"; localstore="no"; firebase="no"; plainpass="no"
-              grep -Eiq 'indexedDB' "$tmp" && indexed="yes"
+              auth="no"; observer="no"; firestore="no"; roles="no"; localstore="no"; plainpass="no"
+              grep -Eiq 'signInWithEmailAndPassword|firebase/auth|firebaseapp' "$tmp" && auth="yes"
+              grep -Eiq 'onAuthStateChanged|beforeAuthStateChanged' "$tmp" && observer="yes"
+              grep -Eiq 'getFirestore|firebase/firestore|collection\(|getDocs\(|getDoc\(' "$tmp" && firestore="yes"
+              grep -Eiq 'isAdmin|admin|role|permission|authorize' "$tmp" && roles="yes"
               grep -Eiq 'localStorage' "$tmp" && localstore="yes"
-              grep -Eiq 'signInWithEmailAndPassword|firebase/auth|firebaseapp' "$tmp" && firebase="yes"
               grep -Eiq '\.password[[:space:]]*===[[:space:]]*password|password[[:space:]]*===[[:space:]]*password' "$tmp" && plainpass="yes"
-              printf '%s HTTP %s | IndexedDB=%s | localStorage=%s | Firebase-auth-reference=%s | direct-password-comparison=%s\n' "$path" "$status" "$indexed" "$localstore" "$firebase" "$plainpass"
-              printf '| %s | %s | %s | %s | %s | %s |\n' "$path" "$status" "$indexed" "$localstore" "$firebase" "$plainpass" >> "$GITHUB_STEP_SUMMARY"
+              printf '%s HTTP %s | FirebaseAuth=%s | AuthObserver=%s | Firestore=%s | RoleKeywords=%s | localStorage=%s | directPasswordCompare=%s\n' "$path" "$status" "$auth" "$observer" "$firestore" "$roles" "$localstore" "$plainpass"
+              printf '| %s | %s | %s | %s | %s | %s | %s | %s |\n' "$path" "$status" "$auth" "$observer" "$firestore" "$roles" "$localstore" "$plainpass" >> "$GITHUB_STEP_SUMMARY"
             else
               printf '%s HTTP %s (asset not available)\n' "$path" "${status:-unknown}"
-              printf '| %s | %s | n/a | n/a | n/a | n/a |\n' "$path" "${status:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+              printf '| %s | %s | n/a | n/a | n/a | n/a | n/a | n/a |\n' "$path" "${status:-unknown}" >> "$GITHUB_STEP_SUMMARY"
             fi
             rm -f "$tmp"
           done < "$PATHS"
           if [ "$count" -eq 0 ]; then
             echo "No same-origin .js script URLs were found in homepage HTML."
-            echo "| (no same-origin scripts found) | n/a | n/a | n/a | n/a | n/a |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| (no same-origin scripts found) | n/a | n/a | n/a | n/a | n/a | n/a | n/a |" >> "$GITHUB_STEP_SUMMARY"
           fi
-          echo "Interpretation: static code-pattern checks are indicators only; they do not prove or disprove authentication bypasses. This workflow does not log in, access private records, submit forms, or alter data."
+          echo "Interpretation: these are static indicators only. Client-side role keywords do not prove access control is enforced by a trusted backend. This workflow does not log in, request private records, submit forms, or change data."
