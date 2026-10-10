@@ -1,0 +1,104 @@
+name: Safe live security checks
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/safe-live-security-checks.yml"
+  pull_request:
+    paths:
+      - ".github/workflows/safe-live-security-checks.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  public-http-checks:
+    name: Public HTTPS and response-header checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check public homepage only
+        shell: bash
+        run: |
+          set -u
+          TARGET="https://staff.crwi.org.in/"
+          TMP_HEADERS="$(mktemp)"
+          trap 'rm -f "$TMP_HEADERS"' EXIT
+
+          echo "Target: $TARGET"
+          echo "Scope: one unauthenticated GET of the public homepage; response body discarded."
+          echo "No credentials, cookies, form submissions, directory enumeration, or state-changing requests are used."
+
+          if ! RESULT="$(curl --silent --show-error --location --max-redirs 5 --connect-timeout 10 --max-time 20 --dump-header "$TMP_HEADERS" --output /dev/null --write-out 'HTTP_STATUS=%{http_code}\nTLS_VERIFY_RESULT=%{ssl_verify_result}\nREDIRECTS=%{num_redirects}\n' "$TARGET")"; then
+            echo "::error::Could not complete HTTPS request. This may be a network/DNS/site availability issue; it does not by itself prove a vulnerability."
+            exit 1
+          fi
+          printf '%s\n' "$RESULT"
+
+          echo
+          echo "## Public response header checks" >> "$GITHUB_STEP_SUMMARY"
+          echo "Target: `https://staff.crwi.org.in/`" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$RESULT" >> "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo "| Header | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+
+          # Keep only the final HTTP response header block (redirects may create earlier blocks).
+          awk '
+            /^HTTP\// { delete h; next }
+            /^[[:alnum:]-]+:/ {
+              name=$1; sub(/:$/, "", name); h[tolower(name)]=1
+            }
+            END {
+              names[1]="strict-transport-security"
+              names[2]="content-security-policy"
+              names[3]="x-content-type-options"
+              names[4]="x-frame-options"
+              names[5]="referrer-policy"
+              names[6]="permissions-policy"
+              for (i=1; i<=6; i++) {
+                n=names[i]
+                if (h[n]) print n "|PRESENT"
+                else print n "|MISSING"
+              }
+            }
+          ' "$TMP_HEADERS" | while IFS='|' read -r name status; do
+            printf '%-28s %s\n' "$name" "$status"
+            printf '| %s | %s |\n' "$name" "$status" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          echo
+          echo "HTTP-to-HTTPS redirect check:"
+          HTTP_HEADERS="$(mktemp)"
+          trap 'rm -f "$TMP_HEADERS" "$HTTP_HEADERS"' EXIT
+          if HTTP_RESULT="$(curl --silent --show-error --max-redirs 0 --connect-timeout 10 --max-time 15 --dump-header "$HTTP_HEADERS" --output /dev/null --write-out 'HTTP_STATUS=%{http_code}\n' 'http://staff.crwi.org.in/' 2>&1)"; then
+            printf '%s\n' "$HTTP_RESULT"
+            if grep -Eiq '^Location:[[:space:]]*https://' "$HTTP_HEADERS"; then
+              echo "HTTP redirect to HTTPS: PRESENT"
+            else
+              echo "HTTP redirect to HTTPS: NOT CONFIRMED (inspect status/location before concluding)"
+            fi
+          else
+            echo "HTTP check failed: $HTTP_RESULT"
+          fi
+
+          echo
+          echo "Cookie flags (values are never printed; only flags are checked):"
+          if grep -Eiq '^Set-Cookie:' "$TMP_HEADERS"; then
+            grep -i '^Set-Cookie:' "$TMP_HEADERS" | while IFS= read -r line; do
+              lower="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
+              flags=""
+              printf '%s' "$lower" | grep -q '; secure' && flags="${flags} Secure"
+              printf '%s' "$lower" | grep -q '; httponly' && flags="${flags} HttpOnly"
+              printf '%s' "$lower" | grep -q '; samesite=' && flags="${flags} SameSite"
+              echo "Set-Cookie flags:${flags:- none detected}"
+            done
+          else
+            echo "No Set-Cookie header observed on the homepage response."
+          fi
+
+          echo
+          echo "Interpretation: missing headers are review findings, not automatic proof of exploitability. This check does not test authentication, authorization, application logic, or private endpoints."
