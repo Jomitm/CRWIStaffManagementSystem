@@ -16,11 +16,11 @@ permissions:
 
 jobs:
   public-http-checks:
-    name: Public HTTPS and response-header checks
+    name: Public HTTPS, headers and deployed-code checks
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 4
     steps:
-      - name: Check public homepage only
+      - name: Check public homepage and response headers
         shell: bash
         run: |
           set -u
@@ -29,7 +29,7 @@ jobs:
           trap 'rm -f "$TMP_HEADERS"' EXIT
 
           echo "Target: $TARGET"
-          echo "Scope: one unauthenticated GET of the public homepage; response body discarded."
+          echo "Scope: unauthenticated GET of the public homepage; response body discarded."
           echo "No credentials, cookies, form submissions, directory enumeration, or state-changing requests are used."
 
           if ! RESULT="$(curl --silent --show-error --location --max-redirs 5 --connect-timeout 10 --max-time 20 --dump-header "$TMP_HEADERS" --output /dev/null --write-out 'HTTP_STATUS=%{http_code}\nTLS_VERIFY_RESULT=%{ssl_verify_result}\nREDIRECTS=%{num_redirects}\n' "$TARGET")"; then
@@ -38,15 +38,15 @@ jobs:
           fi
           printf '%s\n' "$RESULT"
 
-          echo
-          echo "## Public response header checks" >> "$GITHUB_STEP_SUMMARY"
-          echo "Target: `https://staff.crwi.org.in/`" >> "$GITHUB_STEP_SUMMARY"
-          printf '%s\n' "$RESULT" >> "$GITHUB_STEP_SUMMARY"
-          echo >> "$GITHUB_STEP_SUMMARY"
-          echo "| Header | Result |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Public response header checks"
+            echo 'Target: https://staff.crwi.org.in/'
+            printf '%s\n' "$RESULT"
+            echo
+            echo "| Header | Result |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          # Keep only the final HTTP response header block (redirects may create earlier blocks).
           awk '
             /^HTTP\// { delete h; next }
             /^[[:alnum:]-]+:/ {
@@ -79,7 +79,7 @@ jobs:
             if grep -Eiq '^Location:[[:space:]]*https://' "$HTTP_HEADERS"; then
               echo "HTTP redirect to HTTPS: PRESENT"
             else
-              echo "HTTP redirect to HTTPS: NOT CONFIRMED (inspect status/location before concluding)"
+              echo "HTTP redirect to HTTPS: NOT CONFIRMED"
             fi
           else
             echo "HTTP check failed: $HTTP_RESULT"
@@ -100,5 +100,33 @@ jobs:
             echo "No Set-Cookie header observed on the homepage response."
           fi
 
+      - name: Check deployed JavaScript assets without exposing their contents
+        shell: bash
+        run: |
+          set -u
+          BASE="https://staff.crwi.org.in"
+          ASSETS="js/modules/db.js js/modules/auth.js js/modules/attendance.js js/modules/reports.js js/modules/leaves.js js/ui.js js/app.js"
+          echo "## Deployed JavaScript asset checks" >> "$GITHUB_STEP_SUMMARY"
+          echo "Checks only public script availability and reports boolean code-pattern indicators; script contents and passwords are never printed." >> "$GITHUB_STEP_SUMMARY"
+          echo "| Asset | HTTP | IndexedDB | localStorage | Plain password comparison pattern |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          for path in $ASSETS; do
+            tmp="$(mktemp)"
+            status="$(curl --silent --show-error --location --max-redirs 5 --connect-timeout 8 --max-time 15 --output "$tmp" --write-out '%{http_code}' "$BASE/$path" 2>/dev/null || true)"
+            if [ "$status" = "200" ]; then
+              indexed="no"; localstore="no"; plainpass="no"
+              grep -Eiq 'indexedDB' "$tmp" && indexed="yes"
+              grep -Eiq 'localStorage' "$tmp" && localstore="yes"
+              grep -Eiq 'password[[:space:]]*===[[:space:]]*password|.password[[:space:]]*===[[:space:]]*password' "$tmp" && plainpass="yes"
+              printf '%s HTTP %s | IndexedDB=%s | localStorage=%s | direct password comparison=%s\n' "$path" "$status" "$indexed" "$localstore" "$plainpass"
+              printf '| %s | %s | %s | %s | %s |\n' "$path" "$status" "$indexed" "$localstore" "$plainpass" >> "$GITHUB_STEP_SUMMARY"
+            else
+              printf '%s HTTP %s (not found or request failed)\n' "$path" "${status:-unknown}"
+              printf '| %s | %s | n/a | n/a | n/a |\n' "$path" "${status:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            rm -f "$tmp"
+          done
+
           echo
-          echo "Interpretation: missing headers are review findings, not automatic proof of exploitability. This check does not test authentication, authorization, application logic, or private endpoints."
+          echo "Interpretation: public JavaScript being downloadable is normal for browser apps. Storage/password-pattern indicators help compare the deployed build with source-code findings; they are not by themselves proof of a live authentication bypass."
+          echo "This does not test login, authorization, private data access, or any state-changing action."
